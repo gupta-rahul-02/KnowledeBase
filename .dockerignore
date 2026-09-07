@@ -1,0 +1,39 @@
+# Everything git ignores is redundant to build context
+.git
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# App state — never bake user data into the image
+.kb_data/
+data/
+faiss_store/
+faiss_store.migrated_*/
+
+# Local env / IDE
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# Frontend build artifacts (rebuilt inside the image)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+node_modules/
+
+# Docs / OS junk
+README.md
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# CI configs not needed at build time
+.github/

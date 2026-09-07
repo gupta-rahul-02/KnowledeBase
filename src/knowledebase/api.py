@@ -1,14 +1,17 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import queue
 import threading
+from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.knowledebase.data_loader import SUPPORTED_EXTENSIONS, is_valid_url
@@ -20,9 +23,20 @@ from src.knowledebase.session_manager import (
     session_manager,
 )
 
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("knowledebase.api")
+
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(24 * 3600)))
 SESSION_CLEANUP_INTERVAL_SECONDS = int(os.getenv("SESSION_CLEANUP_INTERVAL_SECONDS", str(3600)))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+_allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+ALLOWED_ORIGINS = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", "frontend_dist"))
 
 
 class IngestCancelledError(Exception):
@@ -46,17 +60,23 @@ def _warmup_embedding_model() -> None:
     try:
         model = get_shared_embedding_model()
         model.encode(["warmup"])
-        print("[INFO] Embedding model warmed up")
+        log.info("Embedding model warmed up")
     except Exception as e:
-        print(f"[WARN] Embedding model warm-up failed: {e}")
+        log.warning("Embedding model warm-up failed: %s", e)
+
+
+def _fail_fast_startup_checks() -> None:
+    if not os.getenv("GROQ_API_KEY"):
+        raise RuntimeError("GROQ_API_KEY is not set; refusing to start")
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    _fail_fast_startup_checks()
     try:
         run_migration_if_needed()
     except Exception as e:
-        print(f"[ERROR] Startup migration failed: {e}")
+        log.error("Startup migration failed: %s", e)
     threading.Thread(target=_warmup_embedding_model, daemon=True).start()
     task = asyncio.create_task(_cleanup_loop())
     yield
@@ -67,9 +87,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Knowledge Base RAG API", version="0.2.0", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    if request.method == "POST" and (
+        "/documents" in request.url.path or "/urls" in request.url.path
+    ):
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > MAX_UPLOAD_BYTES:
+            return StreamingResponse(
+                iter([json.dumps({"detail": f"Payload too large (max {MAX_UPLOAD_MB} MB)"}).encode()]),
+                status_code=413,
+                media_type="application/json",
+            )
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -391,7 +427,7 @@ def chat(session_id: str, kb_id: str, req: ChatRequest):
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
             err = str(e)
-            print(f"[ERROR] chat stream failed: {err}")
+            log.error("chat stream failed: %s", err)
             yield f"data: {json.dumps({'type': 'error', 'content': err})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -414,3 +450,25 @@ def cleanup_sessions(max_age_seconds: Optional[int] = None) -> dict:
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# ---------- static frontend (Pattern A: single-image serve) ----------
+# Must be registered LAST so /api/* routes above take precedence.
+
+if FRONTEND_DIST.exists() and (FRONTEND_DIST / "index.html").exists():
+    _assets_dir = FRONTEND_DIST / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    _index_html = FRONTEND_DIST / "index.html"
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_index_html)
+
+    log.info("Serving frontend from %s", FRONTEND_DIST.resolve())
+else:
+    log.info("Frontend dist not found at %s; running API-only", FRONTEND_DIST)

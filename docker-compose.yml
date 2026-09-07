@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: knowledebase:local
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      ALLOWED_ORIGINS: "http://localhost:8080"
+      DATA_DIR: /data
+      HF_HOME: /data/hf_cache
+      SENTENCE_TRANSFORMERS_HOME: /data/hf_cache
+      LOG_LEVEL: INFO
+    volumes:
+      - kb_data:/data
+    restart: unless-stopped
+
+volumes:
+  kb_data:

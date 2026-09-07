@@ -92,3 +92,53 @@ Frontend runs at `http://localhost:5173` and proxies `/api` to the backend.
   - `.kb_data/uploads/<kb_id>/` — original uploaded file blobs.
 - Legacy single-KB sessions (from earlier versions living under `faiss_store/sessions/`) are auto-migrated into SQLite + Chroma on first startup; the old dir is renamed to `faiss_store/sessions.migrated_<timestamp>/` as a backup.
 - A background sweep runs every `SESSION_CLEANUP_INTERVAL_SECONDS` and deletes sessions idle longer than `SESSION_TTL_SECONDS` (both configurable via `.env`). Any request touching a session refreshes its idle timer.
+
+## Deploy (Fly.io, single-image, Pattern A)
+
+Backend + frontend ship as one Docker image. Frontend is built in a `node:20-alpine` stage and served by FastAPI as static files at `/`; `/api/*` routes take precedence over the SPA catch-all.
+
+### Local prod-parity
+
+```powershell
+Copy-Item .env.example .env         # then fill in GROQ_API_KEY
+docker compose up --build
+# open http://localhost:8080
+```
+
+`.kb_data` is stored in a named Docker volume so restarts persist data.
+
+### First-time Fly.io setup
+
+```powershell
+# One-time
+flyctl auth login
+flyctl apps create knowledebase-rag
+flyctl volumes create kb_data --size 1 --region iad
+flyctl secrets set `
+    GROQ_API_KEY=your_groq_key `
+    ADMIN_API_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") `
+    ALLOWED_ORIGINS=https://knowledebase-rag.fly.dev
+```
+
+Adjust `app` name and `primary_region` in `fly.toml` to match. The image URL in `fly.toml` (`ghcr.io/gupta-rahul-02/knowledebase:latest`) must be **public** on GHCR, or add `image_auth` credentials.
+
+### CI/CD (GitHub Actions → GHCR → Fly)
+
+The `.github/workflows/build-and-deploy.yml` workflow runs on push to `master`:
+
+1. Builds the multi-stage Dockerfile.
+2. Pushes `ghcr.io/<owner>/knowledebase:{latest,sha}` (uses the built-in `GITHUB_TOKEN`).
+3. Runs `flyctl deploy --image ...:{sha}` using a `FLY_API_TOKEN` GitHub secret.
+
+**Required GitHub secret**: `FLY_API_TOKEN` — generate with `flyctl auth token` and paste into repo Settings → Secrets → Actions.
+
+After the first successful push, mark the GHCR package as public (GitHub → Packages → Package settings → Change visibility → Public) so Fly can pull without credentials.
+
+### Constraints on Fly free/hobby
+
+- **Single worker only** (`CMD ... --workers 1`) — Chroma's `PersistentClient` isn't multi-process safe.
+- **512 MB RAM VM** is the minimum that reliably runs SentenceTransformer + Chroma; 256 MB will OOM.
+- **1 GB volume** covers HF model cache (~200 MB), Chroma vectors, and a modest set of uploads. Extend with `flyctl volumes extend`.
+- **Auto-stop when idle** is enabled in `fly.toml` (`auto_stop_machines = "stop"`) so idle demo traffic stays within Fly credit limits. First request after idle is ~5 s while the machine wakes.
+- **First cold start** downloads the ~80 MB model into `/data/hf_cache`; subsequent starts reuse it from the volume.
+
