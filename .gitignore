@@ -1,0 +1,65 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- Virtual environments ----------
+.venv/
+venv/
+env/
+
+# ---------- Secrets / env files ----------
+.env
+.env.*
+!.env.example
+
+# ---------- App state (SQLite + Chroma + uploads) ----------
+.kb_data/
+
+# ---------- Legacy on-disk vector store (pre-migration) ----------
+faiss_store/
+faiss_store.migrated_*/
+
+# ---------- Node / Vite frontend ----------
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- IDE / editor ----------
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Model / HF caches (if ever placed inside repo) ----------
+.cache/
+sentence_transformers_cache/
+
+# ---------- Temp files ----------
+tmp_*.json
+tmp_*.py
+*.tmp
+

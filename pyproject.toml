@@ -1,0 +1,33 @@
+[project]
+name = "knowledebase"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "MRI-Rahul-Gupta", email = "rahul.gupta@mrisoftware.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "chromadb>=1.5.9",
+    "faiss-cpu>=1.15.0",
+    "fastapi>=0.115.0",
+    "jq>=1.12.0",
+    "langchain>=1.3.16",
+    "langchain-community>=0.4.2",
+    "langchain-core>=1.6.0",
+    "langchain-groq>=1.1.3",
+    "pymupdf>=1.28.2",
+    "pypdf>=6.16.2",
+    "python-dotenv>=1.2.3",
+    "python-multipart>=0.0.9",
+    "sentence-transformers>=6.0.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.scripts]
+knowledebase = "knowledebase:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
