@@ -29,6 +29,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Bake the sentence-transformers model into the image so cold starts don't download it.
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
+# Force offline mode at runtime so SentenceTransformer doesn't hit HF Hub (rate-limits Cloud Run IPs).
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 COPY src/ ./src/
 COPY --from=frontend-build /app/frontend/dist/ ./frontend_dist/
 
