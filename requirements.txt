@@ -5,8 +5,10 @@ pypdf
 pymupdf
 jq
 sentence-transformers
-faiss-cpu
-chromadb
+qdrant-client
+psycopg[binary]
+psycopg-pool
+boto3
 langchain-groq
 python-dotenv
 fastapi

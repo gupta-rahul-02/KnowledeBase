@@ -1,8 +1,7 @@
 import os
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from src.knowledebase.vector_store import FaissVectorStore
 
 load_dotenv()
 
@@ -13,18 +12,10 @@ Citation = dict  # {"source": str, "page"?: int}
 class RAGSearch:
     def __init__(
         self,
-        vectorstore: Optional[FaissVectorStore] = None,
-        persist_dir: str = "faiss_store",
-        embedding_model: str = "all-MiniLM-L6-v2",
+        vectorstore: Any,
         llm_model: str = "openai/gpt-oss-20b",
     ):
-        # Accept an injected store (session-scoped) or build a default one for scripts/tests
-        if vectorstore is not None:
-            self.vectorstore = vectorstore
-        else:
-            self.vectorstore = FaissVectorStore(persist_dir, embedding_model)
-            self.vectorstore.load()
-
+        self.vectorstore = vectorstore
         groq_api_key = os.getenv("GROQ_API_KEY")
         if not groq_api_key:
             raise RuntimeError("GROQ_API_KEY is not set in environment")

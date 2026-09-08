@@ -1,5 +1,5 @@
 import os
-import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -9,15 +9,13 @@ from typing import Callable, Dict, List, Optional
 
 from sentence_transformers import SentenceTransformer
 
-from src.knowledebase import db
+from src.knowledebase import blob_store, db
 from src.knowledebase.data_loader import load_documents_from_paths, load_documents_from_urls
 from src.knowledebase.search import RAGSearch
-from src.knowledebase.vector_store_chroma import ChromaKbStore, get_chroma_client
+from src.knowledebase.vector_store_qdrant import QdrantKbStore
 
 ProgressCallback = Callable[[dict], None]
 
-DATA_DIR = Path(os.getenv("DATA_DIR", ".kb_data"))
-UPLOADS_ROOT = DATA_DIR / "uploads"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 _shared_model: Optional[SentenceTransformer] = None
@@ -38,14 +36,10 @@ def get_shared_embedding_model() -> SentenceTransformer:
 class KnowledgeBase:
     kb_id: str
     name: str
-    store: ChromaKbStore
+    store: QdrantKbStore
     rag: RAGSearch
     created_at: float
     lock: threading.Lock = field(default_factory=threading.Lock)
-
-    @property
-    def uploads_dir(self) -> Path:
-        return UPLOADS_ROOT / self.kb_id
 
     @property
     def files(self) -> List[str]:
@@ -71,7 +65,6 @@ class Session:
 
 class SessionManager:
     def __init__(self) -> None:
-        UPLOADS_ROOT.mkdir(parents=True, exist_ok=True)
         db.init_schema()
         self._sessions: Dict[str, Session] = {}
         self._registry_lock = threading.Lock()
@@ -79,9 +72,8 @@ class SessionManager:
     # ---- KB construction ----
 
     def _build_kb(self, kb_id: str, name: str, created_at: float) -> KnowledgeBase:
-        (UPLOADS_ROOT / kb_id).mkdir(parents=True, exist_ok=True)
         model = get_shared_embedding_model()
-        store = ChromaKbStore(kb_id=kb_id, model=model)
+        store = QdrantKbStore(kb_id=kb_id, model=model)
         rag = RAGSearch(vectorstore=store)
         return KnowledgeBase(kb_id=kb_id, name=name, store=store, rag=rag, created_at=created_at)
 
@@ -131,12 +123,17 @@ class SessionManager:
     def delete_session(self, session_id: str) -> bool:
         with self._registry_lock:
             session = self._sessions.pop(session_id, None)
+            kb_ids: List[str] = []
             if session:
                 for kb in list(session.kbs.values()):
                     kb.store.delete_collection()
+                    kb_ids.append(kb.kb_id)
             existed = db.delete_session_row(session_id)
-            for kb_id in ([kb.kb_id for kb in session.kbs.values()] if session else []):
-                shutil.rmtree(UPLOADS_ROOT / kb_id, ignore_errors=True)
+            for kb_id in kb_ids:
+                try:
+                    blob_store.delete_kb(kb_id)
+                except Exception as e:
+                    print(f"[WARN] R2 delete_kb failed for {kb_id}: {e}")
             return existed
 
     # ---- KB CRUD ----
@@ -189,7 +186,10 @@ class SessionManager:
                 return False
             kb.store.delete_collection()
             db.delete_kb_row(kb_id)
-            shutil.rmtree(UPLOADS_ROOT / kb_id, ignore_errors=True)
+            try:
+                blob_store.delete_kb(kb_id)
+            except Exception as e:
+                print(f"[WARN] R2 delete_kb failed for {kb_id}: {e}")
             if session.active_kb_id == kb_id:
                 session.active_kb_id = next(iter(session.kbs), None)
                 db.update_session_active_kb(session.session_id, session.active_kb_id)
@@ -213,17 +213,31 @@ class SessionManager:
         self,
         session: Session,
         kb: KnowledgeBase,
-        saved_paths: List[str],
         original_names: List[str],
         progress_callback: Optional[ProgressCallback] = None,
     ) -> int:
         with kb.lock:
             docs: List = []
-            total = len(saved_paths)
-            for i, (path, name) in enumerate(zip(saved_paths, original_names), start=1):
+            total = len(original_names)
+            for i, name in enumerate(original_names, start=1):
                 if progress_callback:
                     progress_callback({"type": "loading", "file": name, "index": i, "total": total})
-                file_docs = load_documents_from_paths([path])
+                data = blob_store.get(kb.kb_id, name)
+                suffix = Path(name).suffix
+                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                try:
+                    tmp.write(data)
+                    tmp.close()
+                    file_docs = load_documents_from_paths([tmp.name])
+                    # Loaders record the tmp path as `source`; restore the user-facing name for citations.
+                    for d in file_docs:
+                        if hasattr(d, "metadata") and isinstance(d.metadata, dict):
+                            d.metadata["source"] = name
+                finally:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
                 if progress_callback:
                     progress_callback({"type": "loaded", "file": name, "docs": len(file_docs), "index": i, "total": total})
                 docs.extend(file_docs)
@@ -269,12 +283,10 @@ class SessionManager:
             if not db.has_item(kb.kb_id, name):
                 return None
             removed = kb.store.remove_document(name)
-            file_path = kb.uploads_dir / name
-            if file_path.exists():
-                try:
-                    file_path.unlink()
-                except Exception as e:
-                    print(f"[WARN] Failed to delete upload file {file_path}: {e}")
+            try:
+                blob_store.delete(kb.kb_id, name)
+            except Exception as e:
+                print(f"[WARN] R2 delete failed for {kb.kb_id}/{name}: {e}")
             db.remove_item(kb.kb_id, name)
         with session.lock:
             session.last_active = time.time()

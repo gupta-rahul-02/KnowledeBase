@@ -14,8 +14,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.knowledebase import blob_store
 from src.knowledebase.data_loader import SUPPORTED_EXTENSIONS, is_valid_url
-from src.knowledebase.migration import run_migration_if_needed
 from src.knowledebase.session_manager import (
     KnowledgeBase,
     Session,
@@ -73,10 +73,6 @@ def _fail_fast_startup_checks() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     _fail_fast_startup_checks()
-    try:
-        run_migration_if_needed()
-    except Exception as e:
-        log.error("Startup migration failed: %s", e)
     threading.Thread(target=_warmup_embedding_model, daemon=True).start()
     task = asyncio.create_task(_cleanup_loop())
     yield
@@ -335,7 +331,6 @@ async def upload_documents(
     files: List[UploadFile] = File(...),
 ):
     session, kb = _require_kb(session_id, kb_id)
-    saved_paths: List[str] = []
     original_names: List[str] = []
     rejected: List[dict] = []
 
@@ -345,23 +340,21 @@ async def upload_documents(
         if ext not in SUPPORTED_EXTENSIONS:
             rejected.append({"name": name, "reason": f"Unsupported extension '{ext}'"})
             continue
-        dest = kb.uploads_dir / name
         content = await upload.read()
-        dest.write_bytes(content)
-        saved_paths.append(str(dest))
+        blob_store.put(kb.kb_id, name, content)
         original_names.append(name)
 
-    if not saved_paths:
+    if not original_names:
         raise HTTPException(status_code=400, detail={"message": "No supported files uploaded", "rejected": rejected})
 
     def run(cb: Callable[[dict], None]) -> int:
-        return session_manager.add_documents(session, kb, saved_paths, original_names, progress_callback=cb)
+        return session_manager.add_documents(session, kb, original_names, progress_callback=cb)
 
     def cleanup() -> None:
-        for p in saved_paths:
+        for name in original_names:
             try:
-                os.remove(p)
-            except FileNotFoundError:
+                blob_store.delete(kb.kb_id, name)
+            except Exception:
                 pass
 
     return _run_ingest_stream(request, session, original_names, rejected, run, lambda: list(kb.files), on_cancel_cleanup=cleanup)
