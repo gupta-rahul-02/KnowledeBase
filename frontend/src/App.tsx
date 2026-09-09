@@ -16,11 +16,32 @@ import {
   setActiveKb,
 } from "./api/client";
 
+type Theme = "light" | "dark";
+const THEME_STORAGE_KEY = "kb-theme";
+
+function getInitialTheme(): Theme {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === "light" || stored === "dark") return stored;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 export default function App() {
   const { session, setSession, loading, error, persistActiveKb, resetLocalSession } = useSession();
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [files, setFiles] = useState<string[]>([]);
   const [kbBusy, setKbBusy] = useState(false);
+  // Below 1024px, only one pane is visible at a time via this tab switcher.
+  const [activePane, setActivePane] = useState<"kb" | "chat">("chat");
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  }
 
   const sessionId = session?.session_id ?? null;
   const activeKbId = session?.active_kb_id ?? null;
@@ -139,46 +160,77 @@ export default function App() {
     return <div className="app-error">Failed to start session: {error ?? "unknown"}</div>;
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">Knowledge Base</div>
-        <div className="session-id" title={session.session_id}>
-          Session: {session.session_id.slice(0, 8)}...
-        </div>
-        <KbSwitcher
-          kbs={session.kbs}
-          activeKbId={activeKbId}
-          busy={kbBusy}
-          onSelect={handleSelectKb}
-          onCreate={handleCreateKb}
-          onRename={handleRenameKb}
-          onDelete={handleDeleteKb}
-        />
-        {sessionId && activeKbId && (
-          <FileUploadPanel
-            sessionId={sessionId}
-            kbId={activeKbId}
-            files={files}
-            onFilesChanged={handleFilesChanged}
-          />
-        )}
-        <button className="reset-btn" onClick={handleResetSession}>
-          Reset Session
+    <div className="app-shell">
+      <button
+        type="button"
+        className="theme-toggle"
+        onClick={toggleTheme}
+        aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+      >
+        {theme === "dark" ? "☀️" : "🌙"}
+      </button>
+      <div className="pane-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activePane === "kb"}
+          className={`pane-tab ${activePane === "kb" ? "pane-tab-active" : ""}`}
+          onClick={() => setActivePane("kb")}
+        >
+          Knowledge Base
         </button>
-      </aside>
-      <main className="main">
-        {sessionId && activeKbId ? (
-          <ChatWindow
-            sessionId={sessionId}
-            kbId={activeKbId}
-            history={history}
-            setHistory={setHistory}
-            hasDocuments={files.length > 0}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activePane === "chat"}
+          className={`pane-tab ${activePane === "chat" ? "pane-tab-active" : ""}`}
+          onClick={() => setActivePane("chat")}
+        >
+          Chat
+        </button>
+      </div>
+      <div className="app">
+        <aside className={`sidebar ${activePane === "chat" ? "pane-hidden" : ""}`}>
+          <div className="brand">Knowledge Base</div>
+          <div className="session-id" title={session.session_id}>
+            Session: {session.session_id.slice(0, 8)}...
+          </div>
+          <KbSwitcher
+            kbs={session.kbs}
+            activeKbId={activeKbId}
+            busy={kbBusy}
+            onSelect={handleSelectKb}
+            onCreate={handleCreateKb}
+            onRename={handleRenameKb}
+            onDelete={handleDeleteKb}
           />
-        ) : (
-          <div className="empty">Select or create a knowledge base to start chatting.</div>
-        )}
-      </main>
+          {sessionId && activeKbId && (
+            <FileUploadPanel
+              sessionId={sessionId}
+              kbId={activeKbId}
+              files={files}
+              onFilesChanged={handleFilesChanged}
+            />
+          )}
+          <button className="reset-btn" onClick={handleResetSession}>
+            Reset Session
+          </button>
+        </aside>
+        <main className={`main ${activePane === "kb" ? "pane-hidden" : ""}`}>
+          {sessionId && activeKbId ? (
+            <ChatWindow
+              sessionId={sessionId}
+              kbId={activeKbId}
+              history={history}
+              setHistory={setHistory}
+              hasDocuments={files.length > 0}
+            />
+          ) : (
+            <div className="empty">Select or create a knowledge base to start chatting.</div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

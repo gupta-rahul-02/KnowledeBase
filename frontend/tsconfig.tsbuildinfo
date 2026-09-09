@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/api/client.ts","./src/components/chatwindow.tsx","./src/components/fileuploadpanel.tsx","./src/components/kbswitcher.tsx","./src/components/messagebubble.tsx","./src/hooks/usesession.ts"],"version":"5.9.3"}
